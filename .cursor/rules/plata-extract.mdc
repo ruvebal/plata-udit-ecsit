@@ -1,0 +1,130 @@
+---
+author: 'Rubén Vega Balbás, PhD – UDIT / ECSiT Research Group'
+description: Rules for the plata-extract PDF extraction project
+globs: ['**/*.py', 'pyproject.toml', 'README.md']
+alwaysApply: true
+---
+
+# PLATA Extract — Project Rules
+
+## Purpose
+
+This project is a multi-backend Python CLI for Digital Humanities scholars to extract structured Markdown + images from heritage PDFs.
+
+Current implemented backends:
+
+- **Plain** (`extract_plain.py`): pymupdf4llm + PyMuPDF. Fast, no GPU, no models. Default.
+- **Neural** (`extract.py`): marker-pdf (surya models). Highest accuracy, needs GPU/RAM.
+
+Planned backend:
+
+- **Plain-Docling** (`extract_plain_docling.py`): Docling + PyMuPDF. See `docs/IMPLEMENTATION-PLAN-PLAIN-DOCLING.md`.
+
+## Architecture
+
+- **Single responsibility:** PDF → Markdown + Images. Nothing else.
+- **Modules:** `check.py` (integrity, shared), `extract.py` (neural backend), `extract_plain.py` (plain backend), `cli.py` (backend dispatch). Add `extract_plain_docling.py` when implementing planned backend.
+- **Shared contract:** All backends implement `extract_file()` → `ExtractResult` and `extract_batch()` → `BatchResult`. Same dataclasses, same output layout.
+- **Default backend is `plain`** — fast, no model download, no GPU surprise.
+
+## Code Style
+
+- Python 3.10+ required.
+- Type hints on all public functions (mypy compatible).
+- Use `pathlib.Path` for all file paths, never raw strings.
+- Use `logging` module, never `print()` in library code. CLI can print to stdout.
+- Dataclasses for result types (`CheckResult`, `ExtractResult`, `BatchResult`).
+- `set -euo pipefail` spirit: no bare `except`, no silent failures. Catch specific exceptions.
+
+## Neural Backend (extract.py)
+
+- Import from `marker.models.load_all_models`, `marker.convert.convert_single_pdf`.
+- Models loaded ONCE in `PlatExtractor.__init__` via `load_all_models()`. Reused across all files. Never reload.
+- `force_ocr` → `load_all_models(force_load_ocr=...)`.
+- Includes `_apply_pdftext_doc_patch()` workaround for marker/pdftext version mismatch.
+- Optional dependency: only installed via `pip install -e '.[neural]'`.
+
+## Plain Backend (extract_plain.py)
+
+- Import from `pymupdf4llm`. Uses `pymupdf4llm.to_markdown()` with `write_images=True`.
+- **No model loading, no GPU, instant startup.**
+- Class `PlainExtractor` with same interface as `PlatExtractor`.
+- `force_ocr` uses Tesseract via PyMuPDF (if installed).
+- Images extracted directly from PDF objects (lossless), renumbered to `001.jpeg`, `002.jpeg`, etc.
+- Base dependency: always available after `pip install -e .`.
+
+## Planned Plain-Docling Backend (extract_plain_docling.py)
+
+- Uses `docling.document_converter.DocumentConverter` plus PyMuPDF support where needed.
+- Must preserve the same output contract (`index.md` + `images/NNN.jpeg`) via post-processing and markdown ref rewrite.
+- Keep backend behind explicit CLI choice until validated.
+- Follow `docs/IMPLEMENTATION-PLAN-PLAIN-DOCLING.md`.
+
+## Output Structure (both backends)
+
+Every PDF produces exactly:
+
+```
+output_dir/FILENAME/
+├── index.md                     # Markdown content
+└── images/                      # Extracted images, numbered 001.jpeg, 002.jpeg, ...
+```
+
+Image references in the Markdown must use relative paths: `![](images/001.jpeg)` (from index.md).
+
+## PDF Integrity Checks (check.py — shared)
+
+Run BEFORE any extraction. Check:
+
+1. File exists and is readable
+2. `.pdf` extension
+3. `%PDF` magic bytes (first 5 bytes)
+4. Opens with `fitz.open()` without error
+5. Not encrypted (`doc.is_encrypted`)
+6. At least 1 page (`doc.page_count > 0`)
+
+## Batch Processing (both backends)
+
+- Default: sequential (one file at a time). Simple, predictable.
+- Progress: `[N/M] filename.pdf ... done (Xs, N images)` on stdout.
+- Errors: catch per-file, log, continue to next. Never crash the batch.
+- Summary at end: succeeded / skipped / failed counts.
+
+## CLI Design
+
+- Positional arg: `input` (file or directory).
+- `--backend`: currently `plain` (default) or `neural`; extend with `plain-docling` only when implemented.
+- `-o` / `--output-dir`: defaults to `./exports`.
+- `--force-ocr`: force OCR on all pages (surya for neural, Tesseract for plain).
+- `--max-pages N`: process only first N pages.
+- `--check-only`: only run integrity checks, no extraction.
+- Neural-only flags: `--use-llm`, `--llm-service`, `--format`. Warn if used with plain.
+- Entry point: `plata-extract` (via pyproject.toml scripts).
+
+## Dependencies
+
+- **Base:** `PyMuPDF`, `pymupdf4llm` (plain backend, lightweight).
+- **Optional `[neural]`:** `marker-pdf` (brings torch, surya, pdftext, etc.).
+- **Optional `[full]`:** `marker-pdf[full]` (non-PDF format support).
+- **Planned optional `[plain_docling]`:** `docling`.
+- No version pins to let pip resolve.
+
+## What NOT to Do
+
+- Do NOT add web server, API, or UI code. This is a CLI tool only.
+- Do NOT re-implement OCR, layout detection, or table extraction. Backends handle it.
+- Do NOT add parallelism unless explicitly asked. Sequential is the default.
+- Do NOT add dependencies beyond what each backend needs.
+- Do NOT handle non-PDF files. Out of scope for plain; marker-pdf[full] territory for neural.
+
+## Testing
+
+- Test `check.py` with: valid PDF, corrupted file, encrypted PDF, empty file, non-PDF.
+- Test both backends (`extract.py`, `extract_plain.py`) with at least one real heritage PDF.
+- Test CLI with `--backend plain` and `--backend neural`, single file and batch.
+- Test that both backends produce identical output structure.
+- When implementing Docling backend, add tests for `--backend plain-docling` and max-pages fallback behavior.
+
+## Relation to PLATA Scholar
+
+This wrapper is the **Ingestor** for the PLATA Scholar monolith. Its Markdown/image output feeds into `plata-scholar`'s Upload page → ChromaDB + SQLite pipeline. Both backends produce the same output — downstream does not know which backend was used.
