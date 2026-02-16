@@ -16,7 +16,7 @@
 
 - **IP:** Rafael Conde Melguizo PhD (ECSIT - UDIT) <rafael.conde@udit.es>
 - **Senior Architect:** Rubén Vega Balbás PhD (ECSIT - UDIT) <ruben.vega@udit.es>
-- **Senior Collaborator:** Cristóbal Tapia García <cristobal.tapia@upm.es>
+- **Senior Collaborator:** Cristóbal Tapia García PhD <cristobal.tapia@upm.es>
 - **Junior Developer:** Gregory Torres Molina - CEAC FP <gregory.torres@alu.ceacfp.es>
 
 ---
