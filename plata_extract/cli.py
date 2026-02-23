@@ -125,6 +125,15 @@ Output structure:
     )
 
     parser.add_argument(
+        "--sanitize-for-neural",
+        action="store_true",
+        help=(
+            "Normalize PDF (cap page dimensions) before neural extraction. "
+            "Use if neural fails with index/Accelerator errors. Neural only."
+        ),
+    )
+
+    parser.add_argument(
         "--check-only",
         action="store_true",
         help="Only run PDF integrity checks, skip extraction.",
@@ -155,9 +164,14 @@ def build_extractor(
             use_llm=args.use_llm,
             output_format=args.format,
             llm_service=args.llm_service,
+            sanitize_for_neural=args.sanitize_for_neural,
         )
 
     if args.backend == "plain-docling":
+        if args.sanitize_for_neural:
+            logging.getLogger(__name__).warning(
+                "--sanitize-for-neural is neural-only; ignoring for plain-docling."
+            )
         if args.use_llm or args.llm_service is not None:
             logging.getLogger(__name__).warning(
                 "--use-llm/--llm-service are neural-only options; "
@@ -169,6 +183,10 @@ def build_extractor(
             )
         return PlainDoclingExtractor(force_ocr=args.force_ocr)
 
+    if args.sanitize_for_neural:
+        logging.getLogger(__name__).warning(
+            "--sanitize-for-neural is neural-only; ignoring for plain backend."
+        )
     if args.use_llm or args.llm_service is not None:
         logging.getLogger(__name__).warning(
             "--use-llm/--llm-service are neural-only options; ignoring for plain backend."

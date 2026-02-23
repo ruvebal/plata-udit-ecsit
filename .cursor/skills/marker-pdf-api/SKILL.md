@@ -1,58 +1,78 @@
 # Skill: marker-pdf Python API
 
+**Environment:** This project uses Python 3.10–3.12 only (`requires-python = ">=3.10,<3.13"`). Install with `python3 -m pip install -e '.[neural]'`.
+
 ## When to Use
 Use this skill when implementing PDF extraction, conversion, or processing using the marker-pdf library.
 
-## marker-pdf Python API Reference
+## marker-pdf 1.10.x API Reference
 
-### Core Imports (current marker-pdf API)
+### Core Imports (marker-pdf 1.10+)
 ```python
-from marker.models import load_all_models
-from marker.convert import convert_single_pdf
+from marker.models import create_model_dict
+from marker.converters.pdf import PdfConverter
+from marker.output import text_from_rendered
 ```
 
-### Load Models (expensive — do once)
+### Load models (expensive — do once)
 ```python
-model_lst = load_all_models(force_load_ocr=False)  # or True to always load OCR model
+artifact_dict = create_model_dict()  # optional: device=..., dtype=..., attention_implementation=...
 ```
-Returns a list of 6 models (texify, layout, order, edit, detection, ocr). ~3GB, 3–5s. Store and reuse.
+Returns a dict of layout, recognition, table_rec, detection, ocr_error predictors. ~3GB, 3–5s. Pass as `artifact_dict` to `PdfConverter`.
 
-### Convert a Single PDF
+### Convert a single PDF
 ```python
-full_text, images, out_metadata = convert_single_pdf(
-    "/path/to/file.pdf",
-    model_lst,
-    max_pages=None,       # optional limit
-    langs=None,           # OCR languages (default from settings)
-    batch_multiplier=1,
+config = {
+    "force_ocr": False,       # True to force OCR on all pages
+    "use_llm": False,
+    "pdftext_workers": 1,
+    "page_range": None,       # e.g. list(range(10)) for first 10 pages
+}
+converter = PdfConverter(
+    artifact_dict=artifact_dict,
+    config=config,
+    renderer="marker.renderers.markdown.MarkdownRenderer",  # or JSONRenderer, HTMLRenderer, ChunkRenderer
+    llm_service=None,  # or e.g. "marker.services.ollama.OllamaService"
 )
-# full_text: str — markdown content
-# images: dict — {filename: PIL.Image}
-# out_metadata: dict — toc, pages, ocr_stats, filetype, etc.
+rendered = converter("/path/to/file.pdf")
+# rendered is a pydantic BaseModel (MarkdownOutput, JSONOutput, etc.)
 ```
 
-### Optional: OCR languages
+### Get text and images from rendered output
 ```python
-full_text, images, meta = convert_single_pdf(
-    fname, model_lst, langs=["es", "en"]
-)
+text, ext, images = text_from_rendered(rendered)
+# text: str (markdown, html, or json string)
+# ext: "md" | "html" | "json"
+# images: dict[str, PIL.Image] — only for MarkdownOutput/HTMLOutput
 ```
 
-### Note on older API
-Some docs or forks mention `create_model_dict`, `PdfConverter`, and `text_from_rendered`. The current PyPI marker-pdf uses `load_all_models()` and `convert_single_pdf()` only; there is no `PdfConverter` or `artifact_dict` in the package.
+### Renderer class names
+- Markdown: `"marker.renderers.markdown.MarkdownRenderer"`
+- JSON: `"marker.renderers.json.JSONRenderer"`
+- HTML: `"marker.renderers.html.HTMLRenderer"`
+- Chunks: `"marker.renderers.chunk.ChunkRenderer"`
 
-### CLI Commands (reference)
+### CLI (reference)
 ```bash
 marker_single /path/to/file.pdf --output_format markdown
 marker /path/to/folder --workers 4
 marker_single file.pdf --use_llm --force_ocr
 ```
 
+## When neural extraction fails (plata-extract)
+
+Some PDFs trigger bugs inside marker-pdf/surya or torch (`index … out of bounds`, `torch.AcceleratorError`). In plata-extract we catch these, log the traceback, and append a hint. **What to do:**
+
+1. **Use plain backend** for that file: `plata-extract file.pdf` (default).
+2. **Limit pages:** `plata-extract file.pdf --backend neural --max-pages N` to stop before the failing page.
+3. **Report upstream:** [datalab-to/marker](https://github.com/datalab-to/marker/issues) with full traceback (and PDF if possible).
+
+See project `docs/TROUBLESHOOTING.md` for full text.
+
 ## Key Facts
-- Requires Python 3.10+
+- Requires Python 3.10–3.12 (3.13+ not supported by PyTorch/marker wheels)
 - Works on GPU (CUDA), CPU, and MPS (Apple Silicon)
 - ~3GB VRAM per worker at peak
-- ~0.18s/page throughput on GPU
 - Supports: PDF, image, PPTX, DOCX, XLSX, HTML, EPUB (with [full] extra)
 - License: GPL-3.0 (code), AI Pubs Open Rail-M (model weights)
 - Heuristic accuracy score: 95.67 (best among open-source tools)

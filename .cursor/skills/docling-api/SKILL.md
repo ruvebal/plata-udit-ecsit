@@ -60,7 +60,7 @@ except ImportError as exc:
         "Docling backend dependency missing. Install with:\n"
         "  pip install docling\n"
         "or\n"
-        "  pip install -e '.[plain_docling]'"
+        "  python3 -m pip install -e ."
     ) from exc
 ```
 

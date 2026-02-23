@@ -7,7 +7,7 @@ Converts heritage PDFs into clean Markdown + extracted images using:
   - neural backend (marker-pdf)
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.0"
 
 from plata_extract.check import CheckResult, check_pdf
 from plata_extract.extract import BatchResult, ExtractResult, PlatExtractor

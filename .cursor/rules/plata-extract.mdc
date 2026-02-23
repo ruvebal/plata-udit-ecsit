@@ -29,7 +29,7 @@ Planned backend:
 
 ## Code Style
 
-- Python 3.10+ required.
+- **Python 3.10, 3.11, or 3.12 only.** `pyproject.toml` has `requires-python = ">=3.10,<3.13"`. Do not use 3.13 or 3.14 (PyTorch/marker-pdf lack compatible wheels).
 - Type hints on all public functions (mypy compatible).
 - Use `pathlib.Path` for all file paths, never raw strings.
 - Use `logging` module, never `print()` in library code. CLI can print to stdout.
@@ -38,11 +38,11 @@ Planned backend:
 
 ## Neural Backend (extract.py)
 
-- Import from `marker.models.load_all_models`, `marker.convert.convert_single_pdf`.
-- Models loaded ONCE in `PlatExtractor.__init__` via `load_all_models()`. Reused across all files. Never reload.
-- `force_ocr` → `load_all_models(force_load_ocr=...)`.
+- Uses marker-pdf 1.10.x API: `marker.models.create_model_dict`, `marker.converters.pdf.PdfConverter`, `marker.output.text_from_rendered`. Artifact dict created ONCE in `PlatExtractor.__init__`; each file gets a `PdfConverter` with that `artifact_dict` and config (`force_ocr`, `use_llm`, `page_range` for max_pages).
 - Includes `_apply_pdftext_doc_patch()` workaround for marker/pdftext version mismatch.
-- Optional dependency: only installed via `pip install -e '.[neural]'`.
+- Optional dependency: only installed via `python3 -m pip install -e '.[neural]'`.
+- **When marker/surya errors occur** (e.g. `index out of bounds`, `torch.AcceleratorError`): catch in `extract_file`, log with `logger.exception`, append user-facing hint (try `--sanitize-for-neural`, `--backend plain`, or `--max-pages N`). See `docs/TROUBLESHOOTING.md`.
+- **Optional sanitization:** `sanitize_for_neural=True` (CLI: `--sanitize-for-neural`) uses `plata_extract.sanitize.sanitize_pdf_for_neural()` to build a temp PDF with pages capped at `DEFAULT_MAX_DIMENSION` (3500 pt) before running the converter; can avoid some surya/torch failures. Temp file is deleted in a `finally` block.
 
 ## Plain Backend (extract_plain.py)
 
@@ -51,7 +51,7 @@ Planned backend:
 - Class `PlainExtractor` with same interface as `PlatExtractor`.
 - `force_ocr` uses Tesseract via PyMuPDF (if installed).
 - Images extracted directly from PDF objects (lossless), renumbered to `001.jpeg`, `002.jpeg`, etc.
-- Base dependency: always available after `pip install -e .`.
+- Base dependency: always available after `python -m pip install -e .`.
 
 ## Planned Plain-Docling Backend (extract_plain_docling.py)
 
@@ -106,8 +106,8 @@ Run BEFORE any extraction. Check:
 - **Base:** `PyMuPDF`, `pymupdf4llm` (plain backend, lightweight).
 - **Optional `[neural]`:** `marker-pdf` (brings torch, surya, pdftext, etc.).
 - **Optional `[full]`:** `marker-pdf[full]` (non-PDF format support).
-- **Planned optional `[plain_docling]`:** `docling`.
-- No version pins to let pip resolve.
+- **Planned optional `[plain_docling]`:** Removed; `docling` is now a base dependency.
+- No version pins to let pip resolve. Use `python -m pip` in docs and examples.
 
 ## What NOT to Do
 

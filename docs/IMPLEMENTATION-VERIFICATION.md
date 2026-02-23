@@ -6,6 +6,10 @@
 
 > This verification covers the **neural backend** (`extract.py`, marker-pdf). The plain backend (`extract_plain.py`, pymupdf4llm) has its own implementation plan and will have its own verification once implemented.
 
+**Environment:** Run tests and CLI with Python 3.10, 3.11, or 3.12. Install with `python -m pip install -e .` and `python -m pip install -e '.[neural]'` as needed.
+
+**Neural failures:** If extraction fails with marker/surya errors (e.g. index out of bounds), see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
+
 ---
 
 ## 1. Objective (Plan §1)

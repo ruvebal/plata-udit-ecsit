@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plata-extract"
-version = "0.1.1"
+version = "0.1.0"
 description = "marker-pdf wrapper for Digital Humanities PDF extraction"
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}

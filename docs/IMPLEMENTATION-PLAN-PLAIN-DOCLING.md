@@ -9,6 +9,8 @@
 - [IMPLEMENTATION-PLAN.md](./IMPLEMENTATION-PLAN.md) — neural backend (marker-pdf)
 - [IMPLEMENTATION-PLAN-PLAIN.md](./IMPLEMENTATION-PLAN-PLAIN.md) — current plain backend path
 
+**Environment:** Python 3.10–3.12. Docling is a base dependency (`python3 -m pip install -e .`). For neural backend failures (marker/surya), see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
+
 ---
 
 ## 1. Objective

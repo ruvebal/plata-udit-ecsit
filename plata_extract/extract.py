@@ -2,12 +2,14 @@
 PLATA Extract — PDF extractor for Digital Humanities.
 Author: Rubén Vega Balbás PhD (ECSIT - UDIT) <ruben.vega@udit.es>
 
-Core extraction logic: thin wrapper around marker-pdf's convert_single_pdf.
+Core extraction logic: thin wrapper around marker-pdf (PdfConverter API).
 
 Design:
-  - Models are loaded ONCE in PlatExtractor.__init__ (~3GB, 3-5 seconds).
-  - Each file reuses the shared model list.
+  - Model artifact dict is created ONCE in PlatExtractor.__init__ (~3GB, 3-5 seconds).
+  - Each file gets a PdfConverter instance using that shared artifact_dict.
   - Output: FILENAME/index.md + FILENAME/images/NNN.jpeg per PDF.
+
+Compatible with marker-pdf 1.10.x (create_model_dict + PdfConverter).
 """
 
 import logging
@@ -115,6 +117,7 @@ class PlatExtractor:
         use_llm: bool = False,
         output_format: str = "markdown",
         llm_service: Optional[str] = None,
+        sanitize_for_neural: bool = False,
     ):
         """
         Initialize extractor: loads marker-pdf model artifacts.
@@ -125,15 +128,19 @@ class PlatExtractor:
             output_format: "markdown" (default), "json", "html", or "chunks".
             llm_service: Marker LLM service class path
                          (e.g. "marker.services.ollama.OllamaService").
+            sanitize_for_neural: If True, normalize PDF (cap page dimensions) before
+                                neural extraction to reduce surya/torch failures.
         """
         try:
-            from marker.models import load_all_models
+            from marker.models import create_model_dict
+            from marker.converters.pdf import PdfConverter
+            from marker.output import text_from_rendered
         except ImportError as exc:
             raise ImportError(
-                "marker-pdf not installed. Install with:\n"
-                "  pip install marker-pdf\n\n"
+                "marker-pdf not installed or incompatible. Install with:\n"
+                "  python3 -m pip install -e '.[neural]'\n\n"
                 "For non-PDF file support:\n"
-                "  pip install 'marker-pdf[full]'"
+                "  python3 -m pip install -e '.[full]'"
             ) from exc
 
         _apply_pdftext_doc_patch()
@@ -142,12 +149,25 @@ class PlatExtractor:
         self.use_llm = use_llm
         self.output_format = output_format
         self.llm_service = llm_service
+        self.sanitize_for_neural = sanitize_for_neural
+        self._PdfConverter = PdfConverter
+        self._text_from_rendered = text_from_rendered
 
         logger.info("Loading marker-pdf models (this takes a few seconds)...")
         t0 = time.time()
-        self._model_lst = load_all_models(force_load_ocr=self.force_ocr)
+        self._artifact_dict = create_model_dict()
         elapsed = time.time() - t0
         logger.info(f"Models loaded in {elapsed:.1f}s")
+
+    def _renderer_class_name(self) -> str:
+        """Return marker renderer class path for current output_format."""
+        renderers = {
+            "markdown": "marker.renderers.markdown.MarkdownRenderer",
+            "json": "marker.renderers.json.JSONRenderer",
+            "html": "marker.renderers.html.HTMLRenderer",
+            "chunks": "marker.renderers.chunk.ChunkRenderer",
+        }
+        return renderers.get(self.output_format, renderers["markdown"])
 
     def extract_file(
         self,
@@ -159,7 +179,7 @@ class PlatExtractor:
         Extract a single PDF to Markdown + images.
 
         Output layout:
-            output_dir/FILENAME/index.md
+            output_dir/FILENAME/index.md (or index.json/html per output_format)
             output_dir/FILENAME/images/001.jpeg, 002.jpeg, ...
 
         Args:
@@ -170,35 +190,84 @@ class PlatExtractor:
         Returns:
             ExtractResult with paths and stats.
         """
-        from marker.convert import convert_single_pdf
-
         pdf_path = Path(pdf_path).resolve()
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         stem = pdf_path.stem
         doc_dir = output_dir / stem
-        md_path = doc_dir / "index.md"
         images_dir = doc_dir / "images"
         doc_dir.mkdir(parents=True, exist_ok=True)
 
-        t0 = time.time()
+        config: dict = {
+            "force_ocr": self.force_ocr,
+            "use_llm": self.use_llm,
+            "pdftext_workers": 1,
+        }
+        if max_pages is not None and max_pages > 0:
+            config["page_range"] = list(range(max_pages))
 
+        # Optional: normalize PDF (cap page dimensions) before neural to reduce surya/torch failures
+        path_to_convert = pdf_path
+        temp_sanitized: Optional[Path] = None
+        if self.sanitize_for_neural:
+            from plata_extract.sanitize import sanitize_pdf_for_neural
+            try:
+                temp_sanitized = sanitize_pdf_for_neural(
+                    pdf_path, max_pages=max_pages,
+                )
+                path_to_convert = temp_sanitized
+                logger.info("Neural input sanitized (capped page size): %s", pdf_path.name)
+            except Exception as exc:
+                if temp_sanitized and temp_sanitized.exists():
+                    try:
+                        temp_sanitized.unlink()
+                    except OSError:
+                        pass
+                logger.warning("Sanitization failed, using original PDF: %s", exc)
+                temp_sanitized = None
+
+        t0 = time.time()
         try:
-            full_text, images, _ = convert_single_pdf(
-                str(pdf_path),
-                self._model_lst,
-                max_pages=max_pages,
+            converter = self._PdfConverter(
+                artifact_dict=self._artifact_dict,
+                config=config,
+                renderer=self._renderer_class_name(),
+                llm_service=self.llm_service,
             )
-            text = full_text
+            rendered = converter(str(path_to_convert))
         except Exception as exc:
             elapsed = time.time() - t0
-            logger.error(f"Extraction failed for {pdf_path.name}: {exc}")
+            logger.exception("Neural extraction failed for %s", pdf_path.name)
+            err_msg = str(exc)
+            # Suggest workarounds for known marker/surya/torch bugs (index out of bounds, AcceleratorError on some pages)
+            if (
+                "out of bounds" in err_msg.lower()
+                or "index" in err_msg.lower()
+                or "AcceleratorError" in type(exc).__name__
+            ):
+                err_msg += (
+                    " (Known surya/torch issue on some PDFs. "
+                    "Try --sanitize-for-neural, --backend plain, or --max-pages N.)"
+                )
             return ExtractResult(
-                ok=False, path=pdf_path,
+                ok=False,
+                path=pdf_path,
                 elapsed_seconds=elapsed,
-                error=str(exc),
+                error=err_msg,
             )
+        finally:
+            if temp_sanitized is not None and temp_sanitized.exists():
+                try:
+                    temp_sanitized.unlink()
+                except OSError:
+                    pass
+
+        text, ext, images = self._text_from_rendered(rendered)
+
+        # Output filename: index.md, index.json, or index.html
+        out_basename = f"index.{ext}"
+        out_path = doc_dir / out_basename
 
         # Save images with sequential numbering
         image_count = 0
@@ -206,14 +275,11 @@ class PlatExtractor:
 
         if images:
             images_dir.mkdir(parents=True, exist_ok=True)
-
             for original_name, img in images.items():
                 image_count += 1
                 new_name = f"{image_count:03d}.jpeg"
                 img_path = images_dir / new_name
-
                 try:
-                    # Convert to RGB if necessary (some images are RGBA/palette)
                     if img.mode in ("RGBA", "P", "LA"):
                         img = img.convert("RGB")
                     img.save(img_path, "JPEG", quality=90)
@@ -222,24 +288,19 @@ class PlatExtractor:
                     logger.warning(f"Could not save image {original_name}: {exc}")
                     image_count -= 1
 
-        # Rewrite image references in markdown
-        md_content = text or ""
+        # Rewrite image references in text (markdown/html)
+        content = text or ""
         for original_name, new_ref in image_name_map.items():
-            # marker uses ![alt](original_name) — replace with our path
-            md_content = md_content.replace(original_name, new_ref)
+            content = content.replace(original_name, new_ref)
 
-        # Write markdown
-        md_path.write_text(md_content, encoding="utf-8")
-
-        # Word count (rough)
-        word_count = len(md_content.split())
-
+        out_path.write_text(content, encoding="utf-8")
+        word_count = len(content.split())
         elapsed = time.time() - t0
 
         return ExtractResult(
             ok=True,
             path=pdf_path,
-            output_md=md_path,
+            output_md=out_path,
             output_images_dir=images_dir if image_count > 0 else None,
             image_count=image_count,
             word_count=word_count,

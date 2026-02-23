@@ -6,6 +6,10 @@
 **Status:** Implemented (see [IMPLEMENTATION-VERIFICATION.md](./IMPLEMENTATION-VERIFICATION.md))  
 **See also:** [IMPLEMENTATION-PLAN-PLAIN.md](./IMPLEMENTATION-PLAN-PLAIN.md) — plain (non-neural) backend
 
+**Environment:** Python 3.10–3.12 only (`requires-python = ">=3.10,<3.13"`). Use `python -m pip install -e '.[neural]'` for the neural backend.
+
+**When marker/surya errors occur:** Some PDFs trigger `index out of bounds` or `torch.AcceleratorError` inside marker-pdf/surya. The wrapper catches these and suggests `--backend plain` or `--max-pages N`. See [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
+
 ---
 
 ## 1. Objective

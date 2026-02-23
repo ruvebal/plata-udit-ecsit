@@ -56,23 +56,31 @@ Designed for the [PLATA project](https://doi.org/10.62161/sauc.v11.5739) (digita
 
 ## Quick Start
 
+### Python version (important)
+
+**Use Python 3.10, 3.11, or 3.12 only.** Python 3.13 and 3.14 are **not supported** — PyTorch and marker-pdf do not provide compatible wheels yet, so `--backend neural` will fail at install or import.
+
+The project enforces this with `requires-python = ">=3.10,<3.13"` in `pyproject.toml`; `pip` will refuse to install on 3.13+.
+
 ### 1. Install
 
-Use **Python 3.10, 3.11, or 3.12**. Recommended steps:
-
 ```bash
-# See what you have
+# Check you have 3.10–3.12 (required)
 python3.12 --version   # or python3.11, python3.10
 
-# From your plata project directory
-cd /Users/ruvebal/src/plata
+# From your project directory
+cd /path/to/plata-udit-ecsit
 
-# Create venv with that Python (use the one that's 3.10–3.12)
+# Create venv with that Python (must be 3.10–3.12)
 python3.12 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
+# Confirm version inside venv
+python --version   # should show 3.10.x, 3.11.x, or 3.12.x
+
 # Install (plain backend ready immediately)
-pip install -e .
+python -m pip install --upgrade pip
+python -m pip install -e .
 ```
 
 This installs the **plain backend** (pymupdf4llm + PyMuPDF). No models, no GPU, ready in seconds.
@@ -80,14 +88,60 @@ This installs the **plain backend** (pymupdf4llm + PyMuPDF). No models, no GPU, 
 **For neural backend** (marker-pdf + PyTorch + surya models):
 
 ```bash
-pip install -e '.[neural]'
+python -m pip install -e '.[neural]'
 ```
 
 First run of `--backend neural` will download ~3GB of models. Needs 8 GB+ RAM.
 
 **Apple Silicon (M1/M2/M3/M4):** Neural works with MPS acceleration.
-**NVIDIA GPU:** For CUDA, install PyTorch from [pytorch.org](https://pytorch.org) first, then `pip install -e '.[neural]'`.
+**NVIDIA GPU:** For CUDA, install PyTorch from [pytorch.org](https://pytorch.org) first, then `python -m pip install -e '.[neural]'`.
 **CPU only:** Neural works, just slower (~5–30 s/page instead of ~0.2 s/page).
+
+### Start over (fresh environment)
+
+If you previously used a different Python (e.g. 3.14) or see "marker-pdf not installed" or import errors:
+
+1. **Remove the old venv** (from project root):
+   ```bash
+   rm -rf .venv
+   ```
+2. **Install Python 3.12** if needed (macOS with Homebrew):
+   ```bash
+   brew install python@3.12
+   python3.12 --version
+   ```
+3. **Create a new venv with 3.12** and install:
+   ```bash
+   python3.12 -m venv .venv
+   source .venv/bin/activate
+   python -m pip install --upgrade pip
+   python -m pip install -e .
+   python -m pip install -e '.[neural]'   # if you use --backend neural
+   ```
+4. **Verify** (inside the activated venv):
+   ```bash
+   python --version                    # 3.10.x, 3.11.x, or 3.12.x
+   python -m pip show pymupdf4llm
+   python -m pip show marker-pdf        # only if using neural
+   plata-extract --help
+   ```
+
+### Dependency sanity check
+
+After install, in the **same** activated venv:
+
+```bash
+python -m pip show pymupdf4llm
+python -m pip show marker-pdf        # only needed for --backend neural
+python -m pip show docling            # included in base install
+```
+
+If a package is missing, reinstall the matching extra:
+
+```bash
+python -m pip install -e .
+python -m pip install -e '.[neural]'
+```
 
 ### 2. Convert a Single PDF
 
@@ -176,11 +230,12 @@ plata-extract [OPTIONS] INPUT
 
 ### Neural-only options
 
-| Option          | Description                                                                  |
-| --------------- | ---------------------------------------------------------------------------- |
-| `--use-llm`     | Use LLM to boost accuracy (tables, math, forms). Requires Ollama or API key. |
-| `--llm-service` | LLM service class (e.g. `marker.services.ollama.OllamaService`)              |
-| `--format`      | Output format: `markdown` (default), `json`, `html`, `chunks`                |
+| Option                   | Description                                                                  |
+| ------------------------ | ---------------------------------------------------------------------------- |
+| `--sanitize-for-neural`  | Normalize PDF (cap page size) before neural; use if neural fails with index/Accelerator errors. |
+| `--use-llm`              | Use LLM to boost accuracy (tables, math, forms). Requires Ollama or API key.  |
+| `--llm-service`          | LLM service class (e.g. `marker.services.ollama.OllamaService`)              |
+| `--format`               | Output format: `markdown` (default), `json`, `html`, `chunks`                 |
 
 ### Examples
 
@@ -197,6 +252,9 @@ plata-extract manuscript_1923.pdf --backend neural --force-ocr
 # Scanned doc — plain with Tesseract OCR
 plata-extract manuscript_1923.pdf --force-ocr
 
+# Neural with sanitization (if neural fails with index/Accelerator errors)
+plata-extract file.pdf --backend neural --sanitize-for-neural
+
 # Test with first 10 pages only
 plata-extract big_book.pdf --max-pages 10
 
@@ -209,6 +267,30 @@ plata-extract paper.pdf --backend neural --format json
 # Batch — plain processes hundreds of PDFs in minutes
 plata-extract archive/ -o exports/
 ```
+
+### Using Ollama locally
+
+To use a **local LLM** (Ollama) with the neural backend for higher accuracy (tables, math, forms):
+
+1. **Install and run Ollama**  
+   - Install from [ollama.com](https://ollama.com).  
+   - Start the server (e.g. run the Ollama app, or `ollama serve` in a terminal).
+
+2. **Pull the vision model** (marker-pdf’s Ollama service defaults to this):
+   ```bash
+   ollama pull llama3.2-vision
+   ```
+   Ollama will listen on `http://localhost:11434` by default.
+
+3. **Run extraction with LLM:**
+   ```bash
+   plata-extract paper.pdf --backend neural --use-llm --llm-service marker.services.ollama.OllamaService
+   ```
+   If you don’t pass `--llm-service`, marker-pdf uses its default (e.g. Gemini); for local-only, pass the Ollama class as above.
+
+4. **Optional:** Use a different model by setting marker’s config (see [marker-pdf docs](https://github.com/datalab-to/marker)); the Ollama service uses `llama3.2-vision` by default.
+
+LLM runs are slower and use more resources; use `--max-pages` to test on a few pages first.
 
 ---
 
@@ -307,12 +389,24 @@ If you need maximum throughput for thousands of PDFs, use marker-pdf's built-in 
 marker /path/to/pdfs/ --workers 4
 ```
 
+### If neural extraction fails on a PDF
+
+Some PDFs trigger bugs inside marker-pdf/surya or torch (e.g. `index … out of bounds`, `torch.AcceleratorError`). The CLI will suggest workarounds:
+
+1. **Try sanitizing first:** `plata-extract file.pdf --backend neural --sanitize-for-neural` (normalizes page dimensions).
+2. **Use the plain backend:** `plata-extract file.pdf` (default; no marker/surya).
+3. **Limit pages:** `plata-extract file.pdf --backend neural --max-pages N` to stop before the failing page.
+4. **Report upstream:** [datalab-to/marker](https://github.com/datalab-to/marker/issues) with the full traceback (and PDF if possible).
+
+Full details: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
 ---
 
 ## Requirements
 
-- **Python 3.10+**
-- **Plain backend:** PyMuPDF + pymupdf4llm (~30 MB). No GPU, minimal RAM.
+- **Python 3.10, 3.11, or 3.12** (3.13 and 3.14 are not supported; `pyproject.toml` uses `requires-python = ">=3.10,<3.13"`).
+- **Plain backend:** PyMuPDF + pymupdf4llm + pymupdf-layout. No GPU, minimal RAM.
+- **Plain-docling backend** uses docling (included in base install).
 - **Neural backend:** + marker-pdf + PyTorch + surya (~3 GB download). 8 GB+ RAM recommended. GPU optional.
 
 ---

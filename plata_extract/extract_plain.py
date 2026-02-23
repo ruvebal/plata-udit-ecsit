@@ -76,14 +76,17 @@ class PlainExtractor:
             output_dir/FILENAME/index.md
             output_dir/FILENAME/images/001.jpeg, 002.jpeg, ...
         """
+        # Optional: import before pymupdf4llm to enable improved layout analysis (titles, headings, tables)
+        try:
+            import pymupdf_layout  # noqa: F401
+        except ImportError:
+            pass
         try:
             import pymupdf4llm
         except ImportError as exc:
             raise ImportError(
                 "Plain backend dependency missing. Install with:\n"
-                "  pip install pymupdf4llm\n"
-                "or\n"
-                "  pip install -e ."
+                "  python3 -m pip install -e ."
             ) from exc
 
         pdf_path = Path(pdf_path).resolve()

@@ -1,3 +1,15 @@
+# macOS cruft
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+!docs/assets/icons/
+
+# Logs & temp files
+*.log
+*.tmp
+*.swp
+
 # Python
 __pycache__/
 *.py[cod]

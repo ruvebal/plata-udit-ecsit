@@ -54,12 +54,16 @@ def _build_subset_pdf(pdf_path: Path, max_pages: int) -> Optional[Path]:
         src.close()
 
 
-def _extract_images_with_pymupdf(pdf_path: Path, images_dir: Path, max_pages: Optional[int]) -> int:
-    """Extract page images using PyMuPDF and save as NNN.jpeg files."""
+def _extract_images_with_pymupdf(
+    pdf_path: Path, images_dir: Path, max_pages: Optional[int]
+) -> tuple[int, list[str]]:
+    """Extract page images using PyMuPDF. Saves as PNG when alpha, else JPEG. Returns (count, relative paths)."""
     import fitz
 
+    images_dir.mkdir(parents=True, exist_ok=True)
     doc = fitz.open(pdf_path)
     count = 0
+    paths: list[str] = []
     try:
         limit = doc.page_count if max_pages is None else min(max_pages, doc.page_count)
         for page_idx in range(limit):
@@ -69,32 +73,38 @@ def _extract_images_with_pymupdf(pdf_path: Path, images_dir: Path, max_pages: Op
                 pix = None
                 try:
                     pix = fitz.Pixmap(doc, xref)
-                    # Convert non-RGB images so JPEG save is reliable.
-                    if pix.n - pix.alpha > 3:
-                        pix = fitz.Pixmap(fitz.csRGB, pix)
                     count += 1
-                    out_path = images_dir / f"{count:03d}.jpeg"
-                    pix.save(out_path)
+                    if pix.alpha:
+                        ext = "png"
+                        out_path = images_dir / f"{count:03d}.png"
+                        pix.save(str(out_path))
+                    else:
+                        # JPEG accepts only Grayscale, RGB, or CMYK; convert to RGB for any other colorspace.
+                        pix = fitz.Pixmap(fitz.csRGB, pix)
+                        ext = "jpeg"
+                        out_path = images_dir / f"{count:03d}.jpeg"
+                        pix.save(str(out_path))
+                    paths.append(f"images/{count:03d}.{ext}")
                 except Exception as exc:
                     logger.warning(f"Could not save image xref={xref}: {exc}")
-                    count -= 1 if count > 0 else 0
+                    count -= 1
                 finally:
                     if pix is not None:
                         pix = None
     finally:
         doc.close()
 
-    return count
+    return count, paths
 
 
-def _append_image_refs_if_missing(md_content: str, image_count: int) -> str:
+def _append_image_refs_if_missing(md_content: str, image_paths: list[str]) -> str:
     """Append markdown refs if none point to our images/ folder."""
-    if image_count <= 0:
+    if not image_paths:
         return md_content
     if "](images/" in md_content:
         return md_content
 
-    refs = "\n".join(f"![](images/{i:03d}.jpeg)" for i in range(1, image_count + 1))
+    refs = "\n".join(f"![]({p})" for p in image_paths)
     return f"{md_content.rstrip()}\n\n## Extracted Images\n\n{refs}\n"
 
 
@@ -124,9 +134,7 @@ class PlainDoclingExtractor:
         except ImportError as exc:
             raise ImportError(
                 "Docling backend dependency missing. Install with:\n"
-                "  pip install docling\n"
-                "or\n"
-                "  pip install -e '.[plain_docling]'"
+                "  python3 -m pip install -e ."
             ) from exc
 
         if self.force_ocr:
@@ -157,9 +165,14 @@ class PlainDoclingExtractor:
             result = converter.convert(str(convert_path))
             md_content = result.document.export_to_markdown()
 
-            image_count = _extract_images_with_pymupdf(pdf_path, images_dir, max_pages=max_pages)
-            md_content = _append_image_refs_if_missing(md_content, image_count)
+            doc_dir.mkdir(parents=True, exist_ok=True)
+            images_dir.mkdir(parents=True, exist_ok=True)
+            image_count, image_paths = _extract_images_with_pymupdf(
+                pdf_path, images_dir, max_pages=max_pages
+            )
+            md_content = _append_image_refs_if_missing(md_content, image_paths)
 
+            doc_dir.mkdir(parents=True, exist_ok=True)
             md_path.write_text(md_content, encoding="utf-8")
             word_count = len(md_content.split())
             elapsed = time.time() - t0

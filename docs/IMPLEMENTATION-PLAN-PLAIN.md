@@ -6,6 +6,8 @@
 **Status:** Planned
 **Depends on:** [IMPLEMENTATION-PLAN.md](./IMPLEMENTATION-PLAN.md) (neural backend, already implemented)
 
+**Environment:** Python 3.10–3.12 only. Install with `python -m pip install -e .` (plain is default). If neural fails on a PDF (marker/surya errors), use plain for that file; see [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
+
 ---
 
 ## 1. Objective
