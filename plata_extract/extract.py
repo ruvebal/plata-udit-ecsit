@@ -14,6 +14,7 @@ Compatible with marker-pdf 1.10.x (create_model_dict + PdfConverter).
 
 import logging
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -87,6 +88,11 @@ class ExtractResult:
     word_count: int = 0
     elapsed_seconds: float = 0.0
     error: Optional[str] = None
+    stage_timings_ms: dict[str, int] = field(default_factory=dict)
+    llm_requests: Optional[int] = None
+    llm_tokens_used: Optional[int] = None
+    llm_errors: Optional[int] = None
+    pages_processed: Optional[int] = None
 
 
 @dataclass
@@ -118,6 +124,7 @@ class PlatExtractor:
         output_format: str = "markdown",
         llm_service: Optional[str] = None,
         sanitize_for_neural: bool = False,
+        overwrite: bool = False,
     ):
         """
         Initialize extractor: loads marker-pdf model artifacts.
@@ -150,6 +157,7 @@ class PlatExtractor:
         self.output_format = output_format
         self.llm_service = llm_service
         self.sanitize_for_neural = sanitize_for_neural
+        self.overwrite = overwrite
         self._PdfConverter = PdfConverter
         self._text_from_rendered = text_from_rendered
 
@@ -174,6 +182,7 @@ class PlatExtractor:
         pdf_path: Path,
         output_dir: Path,
         max_pages: Optional[int] = None,
+        file_log=None,
     ) -> ExtractResult:
         """
         Extract a single PDF to Markdown + images.
@@ -198,6 +207,23 @@ class PlatExtractor:
         doc_dir = output_dir / stem
         images_dir = doc_dir / "images"
         doc_dir.mkdir(parents=True, exist_ok=True)
+        ext_map = {"markdown": "md", "json": "json", "html": "html", "chunks": "json"}
+        expected_ext = ext_map.get(self.output_format, "md")
+        expected_out = doc_dir / f"index.{expected_ext}"
+        if expected_out.exists() and not self.overwrite:
+            msg = (
+                f"Skipped: output already exists at {expected_out}. "
+                "Use --force or --rewrite to overwrite."
+            )
+            if file_log is not None:
+                file_log.warning(msg)
+            return ExtractResult(ok=False, path=pdf_path, error=msg)
+        if self.overwrite:
+            if expected_out.exists():
+                expected_out.unlink(missing_ok=True)
+            if images_dir.exists():
+                shutil.rmtree(images_dir, ignore_errors=True)
+        stage_timings_ms: dict[str, int] = {}
 
         config: dict = {
             "force_ocr": self.force_ocr,
@@ -235,7 +261,11 @@ class PlatExtractor:
                 renderer=self._renderer_class_name(),
                 llm_service=self.llm_service,
             )
+            t_convert = time.time()
             rendered = converter(str(path_to_convert))
+            stage_timings_ms["converter"] = int((time.time() - t_convert) * 1000)
+            if file_log is not None:
+                file_log.stage("converter", stage_timings_ms["converter"])
         except Exception as exc:
             elapsed = time.time() - t0
             logger.exception("Neural extraction failed for %s", pdf_path.name)
@@ -255,6 +285,7 @@ class PlatExtractor:
                 path=pdf_path,
                 elapsed_seconds=elapsed,
                 error=err_msg,
+                stage_timings_ms=stage_timings_ms,
             )
         finally:
             if temp_sanitized is not None and temp_sanitized.exists():
@@ -263,7 +294,11 @@ class PlatExtractor:
                 except OSError:
                     pass
 
+        t_rendered = time.time()
         text, ext, images = self._text_from_rendered(rendered)
+        stage_timings_ms["rendered_to_text"] = int((time.time() - t_rendered) * 1000)
+        if file_log is not None:
+            file_log.stage("rendered_to_text", stage_timings_ms["rendered_to_text"])
 
         # Output filename: index.md, index.json, or index.html
         out_basename = f"index.{ext}"
@@ -274,6 +309,7 @@ class PlatExtractor:
         image_name_map: dict[str, str] = {}
 
         if images:
+            t_images = time.time()
             images_dir.mkdir(parents=True, exist_ok=True)
             for original_name, img in images.items():
                 image_count += 1
@@ -287,13 +323,22 @@ class PlatExtractor:
                 except Exception as exc:
                     logger.warning(f"Could not save image {original_name}: {exc}")
                     image_count -= 1
+            stage_timings_ms["image_save"] = int((time.time() - t_images) * 1000)
+            if file_log is not None:
+                file_log.stage("image_save", stage_timings_ms["image_save"], {
+                    "image_count": image_count,
+                })
 
         # Rewrite image references in text (markdown/html)
         content = text or ""
         for original_name, new_ref in image_name_map.items():
             content = content.replace(original_name, new_ref)
 
+        t_write = time.time()
         out_path.write_text(content, encoding="utf-8")
+        stage_timings_ms["write_output"] = int((time.time() - t_write) * 1000)
+        if file_log is not None:
+            file_log.stage("write_output", stage_timings_ms["write_output"])
         word_count = len(content.split())
         elapsed = time.time() - t0
 
@@ -305,6 +350,8 @@ class PlatExtractor:
             image_count=image_count,
             word_count=word_count,
             elapsed_seconds=elapsed,
+            stage_timings_ms=stage_timings_ms,
+            pages_processed=max_pages if max_pages and max_pages > 0 else None,
         )
 
     def extract_batch(
@@ -313,6 +360,7 @@ class PlatExtractor:
         output_dir: Path,
         check_only: bool = False,
         max_pages: Optional[int] = None,
+        run_logger=None,
     ) -> BatchResult:
         """
         Extract all PDFs in a directory.
@@ -347,16 +395,32 @@ class PlatExtractor:
         logger.info(f"Found {total} PDF(s) in {input_dir}")
 
         for i, pdf_path in enumerate(pdfs, 1):
+            file_log = None
+            if run_logger is not None:
+                file_log = run_logger.file_logger(pdf_path, output_dir)
+                if file_log is not None:
+                    file_log.start(pdf_path=pdf_path, output_dir=output_dir)
             # Pre-flight check
             check = check_pdf(pdf_path)
             prefix = f"[{i}/{total}]"
+            if file_log is not None:
+                file_log.check_result(
+                    pdf_path=pdf_path,
+                    ok=check.ok,
+                    reason=check.reason,
+                    page_count=check.page_count,
+                    file_size_mb=check.file_size_mb,
+                )
 
             if not check.ok:
                 logger.warning(f"{prefix} SKIP {pdf_path.name}: {check.reason}")
                 batch.skipped += 1
-                batch.results.append(ExtractResult(
+                skipped_result = ExtractResult(
                     ok=False, path=pdf_path, error=f"Skipped: {check.reason}",
-                ))
+                )
+                batch.results.append(skipped_result)
+                if file_log is not None:
+                    file_log.complete(skipped_result)
                 continue
 
             pages_info = f"{check.page_count} pages, {check.file_size_mb}MB"
@@ -365,12 +429,15 @@ class PlatExtractor:
             if check_only:
                 logger.info(f"{prefix} CHECK OK: {pdf_path.name}")
                 batch.succeeded += 1
-                batch.results.append(ExtractResult(ok=True, path=pdf_path))
+                check_only_result = ExtractResult(ok=True, path=pdf_path)
+                batch.results.append(check_only_result)
+                if file_log is not None:
+                    file_log.complete(check_only_result)
                 continue
 
             # Extract
             result = self.extract_file(
-                pdf_path, output_dir, max_pages=max_pages
+                pdf_path, output_dir, max_pages=max_pages, file_log=file_log
             )
 
             if result.ok:
@@ -381,10 +448,16 @@ class PlatExtractor:
                     f"{result.word_count} words{img_info}"
                 )
             else:
-                batch.failed += 1
-                logger.error(f"{prefix} FAILED: {result.error}")
+                if str(result.error or "").startswith("Skipped:"):
+                    batch.skipped += 1
+                    logger.warning(f"{prefix} SKIP {pdf_path.name}: {result.error}")
+                else:
+                    batch.failed += 1
+                    logger.error(f"{prefix} FAILED: {result.error}")
 
             batch.results.append(result)
+            if file_log is not None:
+                file_log.complete(result)
 
         batch.elapsed_seconds = time.time() - batch_t0
 

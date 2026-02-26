@@ -11,6 +11,7 @@ Design:
 """
 
 import logging
+import shutil
 import time
 from pathlib import Path
 from typing import Optional
@@ -60,14 +61,16 @@ class PlainExtractor:
     This backend is optimized for speed and low-resource environments.
     """
 
-    def __init__(self, force_ocr: bool = False):
+    def __init__(self, force_ocr: bool = False, overwrite: bool = False):
         self.force_ocr = force_ocr
+        self.overwrite = overwrite
 
     def extract_file(
         self,
         pdf_path: Path,
         output_dir: Path,
         max_pages: Optional[int] = None,
+        file_log=None,
     ) -> ExtractResult:
         """
         Extract a single PDF to Markdown + images.
@@ -97,8 +100,22 @@ class PlainExtractor:
         doc_dir = output_dir / stem
         md_path = doc_dir / "index.md"
         images_dir = doc_dir / "images"
+        if md_path.exists() and not self.overwrite:
+            msg = (
+                f"Skipped: output already exists at {md_path}. "
+                "Use --force or --rewrite to overwrite."
+            )
+            if file_log is not None:
+                file_log.warning(msg)
+            return ExtractResult(ok=False, path=pdf_path, error=msg)
+        if self.overwrite:
+            if md_path.exists():
+                md_path.unlink(missing_ok=True)
+            if images_dir.exists():
+                shutil.rmtree(images_dir, ignore_errors=True)
         doc_dir.mkdir(parents=True, exist_ok=True)
         images_dir.mkdir(parents=True, exist_ok=True)
+        stage_timings_ms: dict[str, int] = {}
 
         t0 = time.time()
 
@@ -115,7 +132,11 @@ class PlainExtractor:
             markdown_kwargs["use_ocr"] = True
 
         try:
+            t_markdown = time.time()
             md_content = pymupdf4llm.to_markdown(**markdown_kwargs)
+            stage_timings_ms["to_markdown"] = int((time.time() - t_markdown) * 1000)
+            if file_log is not None:
+                file_log.stage("to_markdown", stage_timings_ms["to_markdown"])
         except Exception as exc:
             elapsed = time.time() - t0
             logger.error(f"Plain extraction failed for {pdf_path.name}: {exc}")
@@ -124,9 +145,16 @@ class PlainExtractor:
                 path=pdf_path,
                 elapsed_seconds=elapsed,
                 error=str(exc),
+                stage_timings_ms=stage_timings_ms,
             )
 
+        t_renumber = time.time()
         image_name_map, image_count = _renumber_images(images_dir)
+        stage_timings_ms["renumber_images"] = int((time.time() - t_renumber) * 1000)
+        if file_log is not None:
+            file_log.stage("renumber_images", stage_timings_ms["renumber_images"], {
+                "image_count": image_count,
+            })
 
         # Rewrite image references to our stable relative layout.
         for old_name, new_ref in image_name_map.items():
@@ -136,7 +164,11 @@ class PlainExtractor:
             md_content = md_content.replace(str(images_dir / old_name), new_ref)
             md_content = md_content.replace(str((images_dir / old_name).resolve()), new_ref)
 
+        t_write = time.time()
         md_path.write_text(md_content, encoding="utf-8")
+        stage_timings_ms["write_output"] = int((time.time() - t_write) * 1000)
+        if file_log is not None:
+            file_log.stage("write_output", stage_timings_ms["write_output"])
         word_count = len(md_content.split())
         elapsed = time.time() - t0
 
@@ -155,6 +187,8 @@ class PlainExtractor:
             image_count=image_count,
             word_count=word_count,
             elapsed_seconds=elapsed,
+            stage_timings_ms=stage_timings_ms,
+            pages_processed=max_pages if max_pages and max_pages > 0 else None,
         )
 
     def extract_batch(
@@ -163,6 +197,7 @@ class PlainExtractor:
         output_dir: Path,
         check_only: bool = False,
         max_pages: Optional[int] = None,
+        run_logger=None,
     ) -> BatchResult:
         """
         Extract all PDFs in a directory using the plain backend.
@@ -182,15 +217,31 @@ class PlainExtractor:
         logger.info(f"Found {total} PDF(s) in {input_dir}")
 
         for i, pdf_path in enumerate(pdfs, 1):
+            file_log = None
+            if run_logger is not None:
+                file_log = run_logger.file_logger(pdf_path, output_dir)
+                if file_log is not None:
+                    file_log.start(pdf_path=pdf_path, output_dir=output_dir)
             check = check_pdf(pdf_path)
             prefix = f"[{i}/{total}]"
+            if file_log is not None:
+                file_log.check_result(
+                    pdf_path=pdf_path,
+                    ok=check.ok,
+                    reason=check.reason,
+                    page_count=check.page_count,
+                    file_size_mb=check.file_size_mb,
+                )
 
             if not check.ok:
                 logger.warning(f"{prefix} SKIP {pdf_path.name}: {check.reason}")
                 batch.skipped += 1
-                batch.results.append(
-                    ExtractResult(ok=False, path=pdf_path, error=f"Skipped: {check.reason}")
+                skipped_result = ExtractResult(
+                    ok=False, path=pdf_path, error=f"Skipped: {check.reason}"
                 )
+                batch.results.append(skipped_result)
+                if file_log is not None:
+                    file_log.complete(skipped_result)
                 continue
 
             pages_info = f"{check.page_count} pages, {check.file_size_mb}MB"
@@ -199,10 +250,15 @@ class PlainExtractor:
             if check_only:
                 logger.info(f"{prefix} CHECK OK: {pdf_path.name}")
                 batch.succeeded += 1
-                batch.results.append(ExtractResult(ok=True, path=pdf_path))
+                check_only_result = ExtractResult(ok=True, path=pdf_path)
+                batch.results.append(check_only_result)
+                if file_log is not None:
+                    file_log.complete(check_only_result)
                 continue
 
-            result = self.extract_file(pdf_path, output_dir, max_pages=max_pages)
+            result = self.extract_file(
+                pdf_path, output_dir, max_pages=max_pages, file_log=file_log
+            )
             if result.ok:
                 batch.succeeded += 1
                 img_info = f", {result.image_count} images" if result.image_count else ""
@@ -211,10 +267,16 @@ class PlainExtractor:
                     f"{result.word_count} words{img_info}"
                 )
             else:
-                batch.failed += 1
-                logger.error(f"{prefix} FAILED: {result.error}")
+                if str(result.error or "").startswith("Skipped:"):
+                    batch.skipped += 1
+                    logger.warning(f"{prefix} SKIP {pdf_path.name}: {result.error}")
+                else:
+                    batch.failed += 1
+                    logger.error(f"{prefix} FAILED: {result.error}")
 
             batch.results.append(result)
+            if file_log is not None:
+                file_log.complete(result)
 
         batch.elapsed_seconds = time.time() - batch_t0
         logger.info(

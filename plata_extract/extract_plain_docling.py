@@ -12,6 +12,7 @@ Design:
 from __future__ import annotations
 
 import logging
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -113,14 +114,16 @@ class PlainDoclingExtractor:
     Plain extractor that uses Docling for markdown and PyMuPDF for images.
     """
 
-    def __init__(self, force_ocr: bool = False):
+    def __init__(self, force_ocr: bool = False, overwrite: bool = False):
         self.force_ocr = force_ocr
+        self.overwrite = overwrite
 
     def extract_file(
         self,
         pdf_path: Path,
         output_dir: Path,
         max_pages: Optional[int] = None,
+        file_log=None,
     ) -> ExtractResult:
         """
         Extract a single PDF to Markdown + images.
@@ -151,29 +154,61 @@ class PlainDoclingExtractor:
         doc_dir = output_dir / stem
         md_path = doc_dir / "index.md"
         images_dir = doc_dir / "images"
+        if md_path.exists() and not self.overwrite:
+            msg = (
+                f"Skipped: output already exists at {md_path}. "
+                "Use --force or --rewrite to overwrite."
+            )
+            if file_log is not None:
+                file_log.warning(msg)
+            return ExtractResult(ok=False, path=pdf_path, error=msg)
+        if self.overwrite:
+            if md_path.exists():
+                md_path.unlink(missing_ok=True)
+            if images_dir.exists():
+                shutil.rmtree(images_dir, ignore_errors=True)
         doc_dir.mkdir(parents=True, exist_ok=True)
         images_dir.mkdir(parents=True, exist_ok=True)
 
         t0 = time.time()
         subset_path: Optional[Path] = None
+        stage_timings_ms: dict[str, int] = {}
         try:
             if max_pages is not None:
+                t_subset = time.time()
                 subset_path = _build_subset_pdf(pdf_path, max_pages)
+                stage_timings_ms["build_subset_pdf"] = int((time.time() - t_subset) * 1000)
+                if file_log is not None:
+                    file_log.stage("build_subset_pdf", stage_timings_ms["build_subset_pdf"])
             convert_path = subset_path if subset_path is not None else pdf_path
 
+            t_convert = time.time()
             converter = DocumentConverter()
             result = converter.convert(str(convert_path))
             md_content = result.document.export_to_markdown()
+            stage_timings_ms["docling_convert"] = int((time.time() - t_convert) * 1000)
+            if file_log is not None:
+                file_log.stage("docling_convert", stage_timings_ms["docling_convert"])
 
             doc_dir.mkdir(parents=True, exist_ok=True)
             images_dir.mkdir(parents=True, exist_ok=True)
+            t_images = time.time()
             image_count, image_paths = _extract_images_with_pymupdf(
                 pdf_path, images_dir, max_pages=max_pages
             )
+            stage_timings_ms["extract_images"] = int((time.time() - t_images) * 1000)
+            if file_log is not None:
+                file_log.stage("extract_images", stage_timings_ms["extract_images"], {
+                    "image_count": image_count,
+                })
             md_content = _append_image_refs_if_missing(md_content, image_paths)
 
             doc_dir.mkdir(parents=True, exist_ok=True)
+            t_write = time.time()
             md_path.write_text(md_content, encoding="utf-8")
+            stage_timings_ms["write_output"] = int((time.time() - t_write) * 1000)
+            if file_log is not None:
+                file_log.stage("write_output", stage_timings_ms["write_output"])
             word_count = len(md_content.split())
             elapsed = time.time() - t0
 
@@ -191,6 +226,8 @@ class PlainDoclingExtractor:
                 image_count=image_count,
                 word_count=word_count,
                 elapsed_seconds=elapsed,
+                stage_timings_ms=stage_timings_ms,
+                pages_processed=max_pages if max_pages and max_pages > 0 else None,
             )
         except Exception as exc:
             elapsed = time.time() - t0
@@ -200,6 +237,7 @@ class PlainDoclingExtractor:
                 path=pdf_path,
                 elapsed_seconds=elapsed,
                 error=str(exc),
+                stage_timings_ms=stage_timings_ms,
             )
         finally:
             if subset_path is not None:
@@ -214,6 +252,7 @@ class PlainDoclingExtractor:
         output_dir: Path,
         check_only: bool = False,
         max_pages: Optional[int] = None,
+        run_logger=None,
     ) -> BatchResult:
         """
         Extract all PDFs in a directory using the plain-docling backend.
@@ -232,15 +271,31 @@ class PlainDoclingExtractor:
         logger.info(f"Found {total} PDF(s) in {input_dir}")
 
         for i, pdf_path in enumerate(pdfs, 1):
+            file_log = None
+            if run_logger is not None:
+                file_log = run_logger.file_logger(pdf_path, output_dir)
+                if file_log is not None:
+                    file_log.start(pdf_path=pdf_path, output_dir=output_dir)
             check = check_pdf(pdf_path)
             prefix = f"[{i}/{total}]"
+            if file_log is not None:
+                file_log.check_result(
+                    pdf_path=pdf_path,
+                    ok=check.ok,
+                    reason=check.reason,
+                    page_count=check.page_count,
+                    file_size_mb=check.file_size_mb,
+                )
 
             if not check.ok:
                 logger.warning(f"{prefix} SKIP {pdf_path.name}: {check.reason}")
                 batch.skipped += 1
-                batch.results.append(
-                    ExtractResult(ok=False, path=pdf_path, error=f"Skipped: {check.reason}")
+                skipped_result = ExtractResult(
+                    ok=False, path=pdf_path, error=f"Skipped: {check.reason}"
                 )
+                batch.results.append(skipped_result)
+                if file_log is not None:
+                    file_log.complete(skipped_result)
                 continue
 
             pages_info = f"{check.page_count} pages, {check.file_size_mb}MB"
@@ -249,10 +304,15 @@ class PlainDoclingExtractor:
             if check_only:
                 logger.info(f"{prefix} CHECK OK: {pdf_path.name}")
                 batch.succeeded += 1
-                batch.results.append(ExtractResult(ok=True, path=pdf_path))
+                check_only_result = ExtractResult(ok=True, path=pdf_path)
+                batch.results.append(check_only_result)
+                if file_log is not None:
+                    file_log.complete(check_only_result)
                 continue
 
-            result = self.extract_file(pdf_path, output_dir, max_pages=max_pages)
+            result = self.extract_file(
+                pdf_path, output_dir, max_pages=max_pages, file_log=file_log
+            )
             if result.ok:
                 batch.succeeded += 1
                 img_info = f", {result.image_count} images" if result.image_count else ""
@@ -261,10 +321,16 @@ class PlainDoclingExtractor:
                     f"{result.word_count} words{img_info}"
                 )
             else:
-                batch.failed += 1
-                logger.error(f"{prefix} FAILED: {result.error}")
+                if str(result.error or "").startswith("Skipped:"):
+                    batch.skipped += 1
+                    logger.warning(f"{prefix} SKIP {pdf_path.name}: {result.error}")
+                else:
+                    batch.failed += 1
+                    logger.error(f"{prefix} FAILED: {result.error}")
 
             batch.results.append(result)
+            if file_log is not None:
+                file_log.complete(result)
 
         batch.elapsed_seconds = time.time() - batch_t0
         logger.info(

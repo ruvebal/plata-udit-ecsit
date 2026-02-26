@@ -24,13 +24,14 @@
 PLATA Extract is a command-line tool that converts PDF documents into structured Markdown files with extracted images. It provides **different extraction backends**:
 
 - **Plain** (default) — Fast, lightweight, no GPU needed. Uses [pymupdf4llm](https://github.com/pymupdf/RAG) + PyMuPDF.
+- **Plain-Docling** — Layout-aware plain backend. Uses Docling for markdown structure + PyMuPDF for images.
 - **Neural** — Highest accuracy. Uses [marker-pdf](https://github.com/datalab-to/marker) with deep learning models for layout detection, OCR, and table parsing.
 
 Designed for the [PLATA project](https://doi.org/10.62161/sauc.v11.5739) (digitalization of the Residencia de Estudiantes archive), but usable for any research involving PDF-to-text conversion.
 
 ---
 
-## Plain vs Neural
+## Plain / Plain-Docling / Neural
 
 | Feature        | Plain (default)            | Neural (`--backend neural`)          |
 | -------------- | -------------------------- | ------------------------------------ |
@@ -47,9 +48,19 @@ Designed for the [PLATA project](https://doi.org/10.62161/sauc.v11.5739) (digita
 | Accuracy       | Good for digital PDFs      | Best-in-class (95.67 benchmark)      |
 | Best for       | Modern/digital PDFs, batch | Scanned manuscripts, complex layouts |
 
+### Plain-Docling quick profile
+
+| Feature        | Plain-Docling (`--backend plain-docling`)        |
+| -------------- | ------------------------------------------------- |
+| Engine         | Docling + PyMuPDF                                 |
+| Startup        | Fast (no marker model load in wrapper)            |
+| GPU required   | No (device behavior depends on docling internals) |
+| Best for       | Better layout structure than plain, without marker|
+
 **When to use which:**
 
 - **Plain:** Quick first pass; clean digitally-authored PDFs; scholar laptops with limited resources; batch of hundreds of files.
+- **Plain-Docling:** You need stronger markdown structure than plain but want to avoid neural marker/surya fragility.
 - **Neural:** Scanned manuscripts; complex multi-column layouts; heritage publications where ML accuracy matters.
 
 ---
@@ -226,6 +237,11 @@ plata-extract [OPTIONS] INPUT
 | `--max-pages N`      | Process only the first N pages (for testing or low-memory runs) |
 | `--check-only`       | Only run integrity checks, skip extraction                      |
 | `-v`, `--verbose`    | Debug output                                                    |
+| `--torch-device`     | Force torch device (`cpu`, `mps`, `cuda`) via `TORCH_DEVICE`    |
+| `--no-log`           | Disable auto-generated run/extraction log files                |
+| `--no-log-jsonl`     | Disable JSONL event logs (keeps human-readable logs)           |
+| `--log-dir PATH`     | Optional custom directory for run-level logs                   |
+| `--force` / `--rewrite` | Overwrite existing output for a document (default: skip existing) |
 | `--version`          | Show version                                                    |
 
 ### Neural-only options
@@ -234,7 +250,7 @@ plata-extract [OPTIONS] INPUT
 | ------------------------ | ---------------------------------------------------------------------------- |
 | `--sanitize-for-neural`  | Normalize PDF (cap page size) before neural; use if neural fails with index/Accelerator errors. |
 | `--use-llm`              | Use LLM to boost accuracy (tables, math, forms). Requires Ollama or API key.  |
-| `--llm-service`          | LLM service class (e.g. `marker.services.ollama.OllamaService`)              |
+| `--llm-service`          | LLM service class. Use `plata_extract.ollama_service.OllamaService` for Ollama. |
 | `--format`               | Output format: `markdown` (default), `json`, `html`, `chunks`                 |
 
 ### Examples
@@ -245,6 +261,9 @@ plata-extract paper.pdf -o output/
 
 # Neural for highest accuracy
 plata-extract paper.pdf --backend neural -o output/
+
+# Neural, forced CPU (more stable on Apple Silicon if MPS crashes)
+plata-extract paper.pdf --backend neural --torch-device cpu -o output/
 
 # Scanned manuscript — neural with OCR
 plata-extract manuscript_1923.pdf --backend neural --force-ocr
@@ -259,13 +278,20 @@ plata-extract file.pdf --backend neural --sanitize-for-neural
 plata-extract big_book.pdf --max-pages 10
 
 # Neural + LLM enhancement (requires Ollama)
-plata-extract paper.pdf --backend neural --use-llm --llm-service marker.services.ollama.OllamaService
+plata-extract paper.pdf --backend neural --use-llm \
+    --llm-service plata_extract.ollama_service.OllamaService
+
+# Plain-docling backend
+plata-extract paper.pdf --backend plain-docling
 
 # Neural JSON output for downstream processing
 plata-extract paper.pdf --backend neural --format json
 
 # Batch — plain processes hundreds of PDFs in minutes
 plata-extract archive/ -o exports/
+
+# By default existing outputs are protected; use --force/--rewrite to overwrite
+plata-extract archive/ -o exports/ --force
 ```
 
 ### Using Ollama locally
@@ -282,11 +308,14 @@ To use a **local LLM** (Ollama) with the neural backend for higher accuracy (tab
    ```
    Ollama will listen on `http://localhost:11434` by default.
 
-3. **Run extraction with LLM:**
+3. **Run extraction with LLM** (use our Ollama service):
    ```bash
-   plata-extract paper.pdf --backend neural --use-llm --llm-service marker.services.ollama.OllamaService
+   plata-extract paper.pdf --backend neural --use-llm \
+       --llm-service plata_extract.ollama_service.OllamaService
    ```
-   If you don’t pass `--llm-service`, marker-pdf uses its default (e.g. Gemini); for local-only, pass the Ollama class as above.
+   > **Why our Ollama service?** marker-pdf’s built-in `OllamaService` has a bug: it accesses `response_data["prompt_eval_count"]` with a hard key lookup. Ollama ≥ 0.17 with vision models sometimes omits that field, raising a `KeyError` that silently discards the valid response. Our `plata_extract.ollama_service.OllamaService` uses safe `.get()` defaults so the LLM output is kept.
+
+   If you don’t pass `--llm-service`, marker-pdf uses its default (e.g. Gemini); for **local-only**, use the class above.
 
 4. **Optional:** Use a different model by setting marker’s config (see [marker-pdf docs](https://github.com/datalab-to/marker)); the Ollama service uses `llama3.2-vision` by default.
 
@@ -304,7 +333,7 @@ output_dir/
     ├── index.md                  # Markdown (text inside document dir)
     └── images/
         ├── 001.jpeg              # Sequentially numbered
-        ├── 002.jpeg
+        ├── 002.jpeg              # (or .png for alpha images in plain-docling)
         └── ...
 ```
 
@@ -315,6 +344,50 @@ The Markdown file references images with relative paths (from `index.md`):
 ```
 
 This makes each document a self-contained folder and portable. Downstream consumers (`plata-scholar`, RAG pipelines) work identically regardless of which backend produced the output.
+
+---
+
+## Automated Logging and Performance Analysis
+
+Each extraction now generates logs automatically. You no longer need to create `extract.log` by hand.
+
+For each document output (`output_dir/FILENAME/`):
+
+- `extract.log` — human-readable execution summary (command, checks, result, timings, errors).
+- `extract.events.jsonl` — structured machine-readable events for KPI analysis.
+
+For batch runs, run-level logs are also generated in:
+
+- `output_dir/_runs/<RUN_ID>/run.log`
+- `output_dir/_runs/<RUN_ID>/run.events.jsonl`
+
+Why two log formats:
+
+- `extract.log` is best for scholar-facing review and troubleshooting.
+- `extract.events.jsonl` is best for automated analysis (throughput, failure rate, LLM errors, regressions across runs).
+
+Examples:
+
+```bash
+# Default: generate human + JSONL logs
+plata-extract archive/ -o exports/
+
+# Disable structured JSONL events
+plata-extract archive/ -o exports/ --no-log-jsonl
+
+# Disable all generated logs
+plata-extract archive/ -o exports/ --no-log
+
+# Write run-level logs to a custom directory
+plata-extract archive/ -o exports/ --log-dir exports/_runs/custom
+```
+
+Use these logs to compare backends and performance over time:
+
+- success/failure counts per run
+- pages per second
+- words per page
+- LLM request/error rates (when `--use-llm`)
 
 ---
 

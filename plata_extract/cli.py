@@ -14,8 +14,8 @@ Usage:
 
 import argparse
 import logging
+import os
 import sys
-import time
 from pathlib import Path
 from typing import Union
 
@@ -24,6 +24,7 @@ from plata_extract.check import check_pdf
 from plata_extract.extract import PlatExtractor
 from plata_extract.extract_plain import PlainExtractor
 from plata_extract.extract_plain_docling import PlainDoclingExtractor
+from plata_extract.run_logger import RunLogger
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -93,6 +94,16 @@ Output structure:
     )
 
     parser.add_argument(
+        "--torch-device",
+        choices=["cpu", "mps", "cuda"],
+        default=None,
+        help=(
+            "Force torch device for neural/docling models by setting TORCH_DEVICE "
+            "(recommended when MPS is unstable: --torch-device cpu)."
+        ),
+    )
+
+    parser.add_argument(
         "--use-llm",
         action="store_true",
         help="Use LLM to improve accuracy (requires Ollama or API key).",
@@ -134,6 +145,14 @@ Output structure:
     )
 
     parser.add_argument(
+        "--force",
+        "--rewrite",
+        dest="overwrite",
+        action="store_true",
+        help="Overwrite existing output files for a document (default: skip if output exists).",
+    )
+
+    parser.add_argument(
         "--check-only",
         action="store_true",
         help="Only run PDF integrity checks, skip extraction.",
@@ -143,6 +162,25 @@ Output structure:
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose/debug output.",
+    )
+
+    parser.add_argument(
+        "--no-log",
+        action="store_true",
+        help="Disable auto-generated run/extraction log files.",
+    )
+
+    parser.add_argument(
+        "--no-log-jsonl",
+        action="store_true",
+        help="Disable structured JSONL event logs (keep human-readable logs).",
+    )
+
+    parser.add_argument(
+        "--log-dir",
+        type=Path,
+        default=None,
+        help="Optional directory for run-level logs (default: OUTPUT_DIR/_runs/<RUN_ID>).",
     )
 
     parser.add_argument(
@@ -165,6 +203,7 @@ def build_extractor(
             output_format=args.format,
             llm_service=args.llm_service,
             sanitize_for_neural=args.sanitize_for_neural,
+            overwrite=args.overwrite,
         )
 
     if args.backend == "plain-docling":
@@ -181,7 +220,7 @@ def build_extractor(
             logging.getLogger(__name__).warning(
                 "--format is neural-only; plain-docling backend outputs markdown."
             )
-        return PlainDoclingExtractor(force_ocr=args.force_ocr)
+        return PlainDoclingExtractor(force_ocr=args.force_ocr, overwrite=args.overwrite)
 
     if args.sanitize_for_neural:
         logging.getLogger(__name__).warning(
@@ -196,19 +235,50 @@ def build_extractor(
             "--format is neural-only; plain backend always outputs markdown."
         )
 
-    return PlainExtractor(force_ocr=args.force_ocr)
+    return PlainExtractor(force_ocr=args.force_ocr, overwrite=args.overwrite)
 
 
-def run_single(args: argparse.Namespace) -> int:
+def _args_snapshot(args: argparse.Namespace) -> dict:
+    snap = vars(args).copy()
+    for key, value in list(snap.items()):
+        if isinstance(value, Path):
+            snap[key] = str(value)
+    snap["__version__"] = __version__
+    return snap
+
+
+def run_single(args: argparse.Namespace, run_logger: RunLogger) -> int:
     """Process a single PDF file."""
     pdf_path = args.input.resolve()
+    file_log = run_logger.file_logger(pdf_path, args.output_dir)
+    if file_log is not None:
+        file_log.start(pdf_path=pdf_path, output_dir=args.output_dir.resolve())
 
     # Integrity check
     check = check_pdf(pdf_path)
+    if file_log is not None:
+        file_log.check_result(
+            pdf_path=pdf_path,
+            ok=check.ok,
+            reason=check.reason,
+            page_count=check.page_count,
+            file_size_mb=check.file_size_mb,
+        )
     if not check.ok:
         logging.getLogger(__name__).error(
             f"Cannot process {pdf_path.name}: {check.reason}"
         )
+        if file_log is not None:
+            class _Result:
+                ok = False
+                output_md = None
+                output_images_dir = None
+                image_count = 0
+                word_count = 0
+                elapsed_seconds = 0.0
+                error = f"Skipped: {check.reason}"
+
+            file_log.complete(_Result())
         return 1
 
     logging.getLogger(__name__).info(
@@ -217,13 +287,24 @@ def run_single(args: argparse.Namespace) -> int:
 
     if args.check_only:
         logging.getLogger(__name__).info("Check passed.")
+        if file_log is not None:
+            class _Result:
+                ok = True
+                output_md = None
+                output_images_dir = None
+                image_count = 0
+                word_count = 0
+                elapsed_seconds = 0.0
+                error = None
+
+            file_log.complete(_Result())
         return 0
 
     # Extract
     extractor = build_extractor(args)
 
     result = extractor.extract_file(
-        pdf_path, args.output_dir, max_pages=args.max_pages
+        pdf_path, args.output_dir, max_pages=args.max_pages, file_log=file_log
     )
 
     if result.ok:
@@ -234,13 +315,22 @@ def run_single(args: argparse.Namespace) -> int:
         log.info(
             f"  {result.word_count} words, {result.elapsed_seconds:.1f}s"
         )
+        if file_log is not None:
+            file_log.complete(result)
         return 0
     else:
+        if str(result.error or "").startswith("Skipped:"):
+            logging.getLogger(__name__).warning(result.error)
+            if file_log is not None:
+                file_log.complete(result)
+            return 0
         logging.getLogger(__name__).error(f"Failed: {result.error}")
+        if file_log is not None:
+            file_log.complete(result)
         return 1
 
 
-def run_batch(args: argparse.Namespace) -> int:
+def run_batch(args: argparse.Namespace, run_logger: RunLogger) -> tuple[int, dict]:
     """Process all PDFs in a directory."""
     if args.check_only:
         # Light check mode: no need to load marker models
@@ -251,13 +341,24 @@ def run_batch(args: argparse.Namespace) -> int:
 
         if not pdfs:
             log.warning(f"No PDF files found in {args.input}")
-            return 0
+            return 0, {"succeeded": 0, "skipped": 0, "failed": 0}
 
         ok_count = 0
         fail_count = 0
 
         for i, pdf in enumerate(pdfs, 1):
+            file_log = run_logger.file_logger(pdf.resolve(), args.output_dir)
+            if file_log is not None:
+                file_log.start(pdf_path=pdf.resolve(), output_dir=args.output_dir.resolve())
             check = check_pdf(pdf)
+            if file_log is not None:
+                file_log.check_result(
+                    pdf_path=pdf.resolve(),
+                    ok=check.ok,
+                    reason=check.reason,
+                    page_count=check.page_count,
+                    file_size_mb=check.file_size_mb,
+                )
             status = "OK" if check.ok else f"FAIL ({check.reason})"
             pages = f"{check.page_count}p" if check.ok else ""
             log.info(f"[{i}/{len(pdfs)}] {pdf.name}: {status} {pages}")
@@ -266,9 +367,25 @@ def run_batch(args: argparse.Namespace) -> int:
                 ok_count += 1
             else:
                 fail_count += 1
+            if file_log is not None:
+                # Build a minimal result-like object for check-only mode.
+                class _Result:
+                    ok = check.ok
+                    output_md = None
+                    output_images_dir = None
+                    image_count = 0
+                    word_count = 0
+                    elapsed_seconds = 0.0
+                    error = None if check.ok else f"Skipped: {check.reason}"
+
+                file_log.complete(_Result())
 
         log.info(f"\n{ok_count} OK, {fail_count} failed out of {len(pdfs)}")
-        return 0 if fail_count == 0 else 1
+        return (0 if fail_count == 0 else 1), {
+            "succeeded": ok_count,
+            "skipped": 0,
+            "failed": fail_count,
+        }
 
     # Full extraction
     extractor = build_extractor(args)
@@ -277,9 +394,14 @@ def run_batch(args: argparse.Namespace) -> int:
         input_dir=args.input,
         output_dir=args.output_dir,
         max_pages=args.max_pages,
+        run_logger=run_logger,
     )
 
-    return 0 if batch.failed == 0 else 1
+    return (0 if batch.failed == 0 else 1), {
+        "succeeded": batch.succeeded,
+        "skipped": batch.skipped,
+        "failed": batch.failed,
+    }
 
 
 def main() -> int:
@@ -292,19 +414,48 @@ def main() -> int:
     log = logging.getLogger(__name__)
     log.info(f"PLATA Extract v{__version__} [{args.backend}]")
 
+    # Must be set early so surya/marker/docling read it during import/config.
+    if args.torch_device is not None:
+        os.environ["TORCH_DEVICE"] = args.torch_device
+
+    run_logger = RunLogger(
+        backend=args.backend,
+        input_path=args.input,
+        output_dir=args.output_dir,
+        argv=sys.argv,
+        flags=_args_snapshot(args),
+        enabled=not args.no_log,
+        jsonl_enabled=not args.no_log_jsonl,
+        log_dir=args.log_dir,
+    )
+    run_logger.start()
+
     input_path = args.input.resolve()
 
     if not input_path.exists():
         log.error(f"Input not found: {input_path}")
+        run_logger.complete(ok=False)
         return 1
 
+    exit_code = 1
+    stats = None
     if input_path.is_file():
-        return run_single(args)
+        exit_code = run_single(args, run_logger)
     elif input_path.is_dir():
-        return run_batch(args)
+        exit_code, stats = run_batch(args, run_logger)
     else:
         log.error(f"Input is neither a file nor directory: {input_path}")
-        return 1
+        exit_code = 1
+    if stats is not None:
+        run_logger.complete(
+            ok=exit_code == 0,
+            succeeded=stats["succeeded"],
+            skipped=stats["skipped"],
+            failed=stats["failed"],
+        )
+    else:
+        run_logger.complete(ok=exit_code == 0)
+    return exit_code
 
 
 if __name__ == "__main__":

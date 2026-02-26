@@ -98,16 +98,23 @@ Run BEFORE any extraction. Check:
 - `--force-ocr`: force OCR on all pages (surya for neural, Tesseract for plain).
 - `--max-pages N`: process only first N pages.
 - `--check-only`: only run integrity checks, no extraction.
-- Neural-only flags: `--use-llm`, `--llm-service`, `--format`. Warn if used with plain.
+- Neural-only flags: `--use-llm`, `--llm-service`, `--format`, `--sanitize-for-neural`. Warn if used with plain.
+- For Ollama LLM: use `--llm-service plata_extract.ollama_service.OllamaService` (not marker's built-in `OllamaService` which has a `KeyError` bug on Ollama >= 0.17 with vision models).
 - Entry point: `plata-extract` (via pyproject.toml scripts).
 
 ## Dependencies
 
-- **Base:** `PyMuPDF`, `pymupdf4llm` (plain backend, lightweight).
+- **Base:** `PyMuPDF`, `pymupdf4llm`, `pymupdf-layout`, `docling` (plain + plain-docling backends).
 - **Optional `[neural]`:** `marker-pdf` (brings torch, surya, pdftext, etc.).
 - **Optional `[full]`:** `marker-pdf[full]` (non-PDF format support).
-- **Planned optional `[plain_docling]`:** Removed; `docling` is now a base dependency.
+- **Bundled:** `plata_extract.ollama_service.OllamaService` — Ollama 0.17+ compatible; fixes marker-pdf's `KeyError` on `prompt_eval_count`.
 - No version pins to let pip resolve. Use `python -m pip` in docs and examples.
+
+## Planned: LLM Post-Processing (`--postprocess-llm`)
+
+- Backend-agnostic LLM refinement step that runs AFTER any backend's extraction.
+- Uses Ollama directly (no marker-pdf/surya/torch); avoids MPS crashes entirely.
+- See `docs/IMPLEMENTATION-PLAN-LLM-POSTPROCESS.md` for full design.
 
 ## What NOT to Do
 

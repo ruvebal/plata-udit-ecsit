@@ -32,7 +32,7 @@ converter = PdfConverter(
     artifact_dict=artifact_dict,
     config=config,
     renderer="marker.renderers.markdown.MarkdownRenderer",  # or JSONRenderer, HTMLRenderer, ChunkRenderer
-    llm_service=None,  # or e.g. "marker.services.ollama.OllamaService"
+    llm_service=None,  # Use "plata_extract.ollama_service.OllamaService" for Ollama (our Ollama 0.17+ compatible service; marker's built-in has a KeyError bug)
 )
 rendered = converter("/path/to/file.pdf")
 # rendered is a pydantic BaseModel (MarkdownOutput, JSONOutput, etc.)
@@ -63,9 +63,22 @@ marker_single file.pdf --use_llm --force_ocr
 
 Some PDFs trigger bugs inside marker-pdf/surya or torch (`index … out of bounds`, `torch.AcceleratorError`). In plata-extract we catch these, log the traceback, and append a hint. **What to do:**
 
-1. **Use plain backend** for that file: `plata-extract file.pdf` (default).
-2. **Limit pages:** `plata-extract file.pdf --backend neural --max-pages N` to stop before the failing page.
-3. **Report upstream:** [datalab-to/marker](https://github.com/datalab-to/marker/issues) with full traceback (and PDF if possible).
+1. **Sanitize the PDF first:** `plata-extract file.pdf --backend neural --sanitize-for-neural` (caps page dimensions).
+2. **Use plain backend** for that file: `plata-extract file.pdf` (default).
+3. **Limit pages:** `plata-extract file.pdf --backend neural --max-pages N` to stop before the failing page.
+4. **Report upstream:** [datalab-to/marker](https://github.com/datalab-to/marker/issues) with full traceback (and PDF if possible).
+
+## Ollama LLM integration
+
+marker-pdf's `OllamaService` has a bug: it uses `response_data["prompt_eval_count"]` (hard key lookup) which raises `KeyError` on Ollama >= 0.17 with vision models. All valid responses are silently discarded.
+
+**Use `plata_extract.ollama_service.OllamaService`** (Ollama 0.17+ compatible):
+```bash
+plata-extract paper.pdf --backend neural --use-llm \
+    --llm-service plata_extract.ollama_service.OllamaService
+```
+
+Our `OllamaService` uses `.get()` with defaults, preserving the actual LLM output.
 
 See project `docs/TROUBLESHOOTING.md` for full text.
 
