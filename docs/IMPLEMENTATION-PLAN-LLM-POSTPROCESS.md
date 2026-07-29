@@ -1,8 +1,10 @@
 # Implementation Plan: LLM Post-Processing for Plain / Plain-Docling Backends
 
-**Author:** Rubén Vega Balbás PhD (ECSIT - UDIT)  
-**Status:** Proposed  
+**Author:** Rubén Vega Balbás PhD — ruvebal@crea-comm.net (ECSIT - UDIT)
+**Status:** Proposed → **Superseded by [IMPLEMENTATION-PLAN-ENRICHED-EXTRACTION.md](./IMPLEMENTATION-PLAN-ENRICHED-EXTRACTION.md)**
 **Date:** 2026-02-26
+
+> **Note (2026-02-27):** This plan's Phases 1-3 (core LLM refinement, vision mode, prompt variants) are absorbed into the master enrichment plan which adds surya layout analysis, YAML frontmatter, entity markup, and accurate indexing. Phase 4 (summaries and hard markup) is expanded significantly there. **Read [IMPLEMENTATION-PLAN-ENRICHED-EXTRACTION.md](./IMPLEMENTATION-PLAN-ENRICHED-EXTRACTION.md) for the current design.** This document is kept for historical context and the detailed prompt engineering notes.
 
 ---
 

@@ -2,7 +2,7 @@
 
 **Convert heritage PDFs to clean Markdown + images — for scholars, by scholars.**
 
-**Author:** Rubén Vega Balbás PhD (UDIT / ECSiT Research Group) <ruben.vega@udit.es>
+**Author:** Rubén Vega Balbás PhD — Creative Technologist & Developer — ruvebal@crea-comm.net (UDIT / ECSiT Research Group)
 
 **Version:** 0.1.0
 
@@ -15,7 +15,7 @@
 ## Team & Affiliations
 
 - **IP:** Rafael Conde Melguizo PhD (ECSIT - UDIT) <rafael.conde@udit.es>
-- **Senior Architect:** Rubén Vega Balbás PhD (ECSIT - UDIT) <ruben.vega@udit.es>
+- **Senior Architect:** Rubén Vega Balbás PhD (ECSIT - UDIT) <ruvebal@crea-comm.net>
 - **Senior Collaborator:** Cristóbal Tapia García PhD <cristobal.tapia@upm.es>
 - **Junior Developer:** Gregory Torres Molina - CEAC FP <gregory.torres@alu.ceacfp.es>
 
@@ -50,12 +50,12 @@ Designed for the [PLATA project](https://doi.org/10.62161/sauc.v11.5739) (digita
 
 ### Plain-Docling quick profile
 
-| Feature        | Plain-Docling (`--backend plain-docling`)        |
-| -------------- | ------------------------------------------------- |
-| Engine         | Docling + PyMuPDF                                 |
-| Startup        | Fast (no marker model load in wrapper)            |
-| GPU required   | No (device behavior depends on docling internals) |
-| Best for       | Better layout structure than plain, without marker|
+| Feature      | Plain-Docling (`--backend plain-docling`)          |
+| ------------ | -------------------------------------------------- |
+| Engine       | Docling + PyMuPDF                                  |
+| Startup      | Fast (no marker model load in wrapper)             |
+| GPU required | No (device behavior depends on docling internals)  |
+| Best for     | Better layout structure than plain, without marker |
 
 **When to use which:**
 
@@ -228,30 +228,30 @@ Quickly validates all PDFs (corrupted, encrypted, empty) without extraction:
 plata-extract [OPTIONS] INPUT
 ```
 
-| Option               | Description                                                     |
-| -------------------- | --------------------------------------------------------------- |
-| `INPUT`              | PDF file or directory containing PDFs                           |
-| `--backend`          | `plain` (default) or `neural`                                   |
-| `-o`, `--output-dir` | Output directory (default: `./exports`)                         |
-| `--force-ocr`        | Force OCR (surya for neural, Tesseract for plain)               |
-| `--max-pages N`      | Process only the first N pages (for testing or low-memory runs) |
-| `--check-only`       | Only run integrity checks, skip extraction                      |
-| `-v`, `--verbose`    | Debug output                                                    |
-| `--torch-device`     | Force torch device (`cpu`, `mps`, `cuda`) via `TORCH_DEVICE`    |
-| `--no-log`           | Disable auto-generated run/extraction log files                |
-| `--no-log-jsonl`     | Disable JSONL event logs (keeps human-readable logs)           |
-| `--log-dir PATH`     | Optional custom directory for run-level logs                   |
+| Option                  | Description                                                       |
+| ----------------------- | ----------------------------------------------------------------- |
+| `INPUT`                 | PDF file or directory containing PDFs                             |
+| `--backend`             | `plain` (default) or `neural`                                     |
+| `-o`, `--output-dir`    | Output directory (default: `./exports`)                           |
+| `--force-ocr`           | Force OCR (surya for neural, Tesseract for plain)                 |
+| `--max-pages N`         | Process only the first N pages (for testing or low-memory runs)   |
+| `--check-only`          | Only run integrity checks, skip extraction                        |
+| `-v`, `--verbose`       | Debug output                                                      |
+| `--torch-device`        | Force torch device (`cpu`, `mps`, `cuda`) via `TORCH_DEVICE`      |
+| `--no-log`              | Disable auto-generated run/extraction log files                   |
+| `--no-log-jsonl`        | Disable JSONL event logs (keeps human-readable logs)              |
+| `--log-dir PATH`        | Optional custom directory for run-level logs                      |
 | `--force` / `--rewrite` | Overwrite existing output for a document (default: skip existing) |
-| `--version`          | Show version                                                    |
+| `--version`             | Show version                                                      |
 
 ### Neural-only options
 
-| Option                   | Description                                                                  |
-| ------------------------ | ---------------------------------------------------------------------------- |
-| `--sanitize-for-neural`  | Normalize PDF (cap page size) before neural; use if neural fails with index/Accelerator errors. |
-| `--use-llm`              | Use LLM to boost accuracy (tables, math, forms). Requires Ollama or API key.  |
-| `--llm-service`          | LLM service class. Use `plata_extract.ollama_service.OllamaService` for Ollama. |
-| `--format`               | Output format: `markdown` (default), `json`, `html`, `chunks`                 |
+| Option                  | Description                                                                                     |
+| ----------------------- | ----------------------------------------------------------------------------------------------- |
+| `--sanitize-for-neural` | Normalize PDF (cap page size) before neural; use if neural fails with index/Accelerator errors. |
+| `--use-llm`             | Use LLM to boost accuracy (tables, math, forms). Requires Ollama or API key.                    |
+| `--llm-service`         | LLM service class. Use `plata_extract.ollama_service.OllamaService` for Ollama.                 |
+| `--format`              | Output format: `markdown` (default), `json`, `html`, `chunks`                                   |
 
 ### Examples
 
@@ -296,23 +296,29 @@ plata-extract archive/ -o exports/ --force
 
 ### Using Ollama locally
 
+PLATA Extract has an **optional infra dependency on Ollama**: required when using neural `--use-llm` or (when implemented) enrichment flags such as `--enrich-llm`. Base extraction (plain / plain-docling without enrichment) needs no server. Vectorization and graph generation stay in the downstream consumer (e.g. ARKADIA); see `docs/IMPLEMENTATION-PLAN-ENRICHED-EXTRACTION.md` for the boundary.
+
 To use a **local LLM** (Ollama) with the neural backend for higher accuracy (tables, math, forms):
 
-1. **Install and run Ollama**  
-   - Install from [ollama.com](https://ollama.com).  
+1. **Install and run Ollama**
+   - Install from [ollama.com](https://ollama.com).
    - Start the server (e.g. run the Ollama app, or `ollama serve` in a terminal).
 
 2. **Pull the vision model** (marker-pdf’s Ollama service defaults to this):
+
    ```bash
    ollama pull llama3.2-vision
    ```
+
    Ollama will listen on `http://localhost:11434` by default.
 
 3. **Run extraction with LLM** (use our Ollama service):
+
    ```bash
    plata-extract paper.pdf --backend neural --use-llm \
        --llm-service plata_extract.ollama_service.OllamaService
    ```
+
    > **Why our Ollama service?** marker-pdf’s built-in `OllamaService` has a bug: it accesses `response_data["prompt_eval_count"]` with a hard key lookup. Ollama ≥ 0.17 with vision models sometimes omits that field, raising a `KeyError` that silently discards the valid response. Our `plata_extract.ollama_service.OllamaService` uses safe `.get()` defaults so the LLM output is kept.
 
    If you don’t pass `--llm-service`, marker-pdf uses its default (e.g. Gemini); for **local-only**, use the class above.

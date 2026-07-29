@@ -60,14 +60,27 @@ Planned backend:
 - Keep backend behind explicit CLI choice until validated.
 - Follow `docs/IMPLEMENTATION-PLAN-PLAIN-DOCLING.md`.
 
-## Output Structure (both backends)
+## Output Structure (all backends)
 
-Every PDF produces exactly:
+Every PDF produces at minimum:
 
 ```
 output_dir/FILENAME/
-├── index.md                     # Markdown content
-└── images/                      # Extracted images, numbered 001.jpeg, 002.jpeg, ...
+├── index.md                     # Markdown content (enriched if --enrich-* used)
+├── images/                      # Extracted images, numbered 001.jpeg, 002.jpeg, ...
+```
+
+With enrichment enabled (`--enrich-*` flags), additional files:
+
+```
+output_dir/FILENAME/
+├── index.md                     # Enriched Markdown
+├── index.raw.md                 # Original extraction (backup before Ollama)
+├── metadata.yaml                # YAML frontmatter (title, author, date, entities, summary)
+├── layout.json                  # Surya layout analysis (bboxes, labels, reading order)
+├── images/                      # Extracted images
+├── extract.log                  # Human-readable log
+└── extract.events.jsonl         # Structured event log
 ```
 
 Image references in the Markdown must use relative paths: `![](images/001.jpeg)` (from index.md).
@@ -110,19 +123,26 @@ Run BEFORE any extraction. Check:
 - **Bundled:** `plata_extract.ollama_service.OllamaService` — Ollama 0.17+ compatible; fixes marker-pdf's `KeyError` on `prompt_eval_count`.
 - No version pins to let pip resolve. Use `python -m pip` in docs and examples.
 
-## Planned: LLM Post-Processing (`--postprocess-llm`)
+## Planned: Enriched Extraction (Surya + Ollama)
 
-- Backend-agnostic LLM refinement step that runs AFTER any backend's extraction.
-- Uses Ollama directly (no marker-pdf/surya/torch); avoids MPS crashes entirely.
-- See `docs/IMPLEMENTATION-PLAN-LLM-POSTPROCESS.md` for full design.
+Two orthogonal enrichment layers, both opt-in and backend-agnostic:
+
+- **Surya Layout** (`--enrich-layout`): Standalone surya models for ML-quality layout labels, reading order, table recognition, bounding boxes. Produces `layout.json`. No marker-pdf dependency.
+- **Ollama Enrichment** (`--enrich-llm`, `--enrich-metadata`, `--enrich-entities`, `--enrich-index`, `--enrich-summary`): Post-extraction LLM pass for correction, YAML frontmatter, entity markup, footnote linking, summaries. Produces enriched `index.md` + `metadata.yaml`.
+
+New optional dependency: `[surya]` extra (brings torch but NOT marker-pdf).
+
+**Master plan:** `docs/IMPLEMENTATION-PLAN-ENRICHED-EXTRACTION.md` (supersedes/extends LLM post-process plan).
+**Legacy plan:** `docs/IMPLEMENTATION-PLAN-LLM-POSTPROCESS.md` (Phase 1-3 absorbed into enriched extraction plan).
 
 ## What NOT to Do
 
-- Do NOT add web server, API, or UI code. This is a CLI tool only.
-- Do NOT re-implement OCR, layout detection, or table extraction. Backends handle it.
+- Do NOT add web server, API, or UI code. This is a CLI + library only.
+- Do NOT add vectorization, embeddings, or graph generation. That belongs in ARKADIA.
 - Do NOT add parallelism unless explicitly asked. Sequential is the default.
-- Do NOT add dependencies beyond what each backend needs.
+- Do NOT add dependencies beyond what each backend/enrichment layer needs.
 - Do NOT handle non-PDF files. Out of scope for plain; marker-pdf[full] territory for neural.
+- Do NOT make enrichment mandatory. Base extraction must work without Ollama or surya.
 
 ## Testing
 
